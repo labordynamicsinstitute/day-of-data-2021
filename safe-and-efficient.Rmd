@@ -1,0 +1,218 @@
+---
+title: "Safe and efficient big data access"
+author: "Lars Vilhuber"
+date: "1/28/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# At a minimum, this project environment should have checkpoint and rprojroot - the rest can later be dynamically added if necessary.
+knitr::opts_chunk$set(echo = TRUE)
+# require("checkpoint")
+require("rprojroot")
+basepath <- rprojroot::find_root(rprojroot::has_file("README.md"))
+```
+
+This document intends to demonstrate two methods of accessing big (or confidential) data. The first seems at first glance to be the most efficient way of doing it. But once you factor in time or cost constraints, there will be issues. The second method therefore breaks down the data and processing stream into separate components, and allows to separate the time consuming part from other reproducible parts.
+
+## Context
+
+We will use U.S. Census Bureau data (American Community Survey data) through an API. Downloading the entire corpus of ACS data would consume multiple 100 GB, but the API allows us to slice and dice the data. The example we will use will artificially reduce the amount of data for illustrative purposes, but we identify how this simple example becomes a "big data" example.
+
+## Fake reproducibility setup
+
+In principle, you should be using packages such as `checkpoint` to provide a fully reproducible environment. In the interest of time, we will skip that here. Please consult the [Checkpoint vignette](https://cran.r-project.org/web/packages/checkpoint/vignettes/checkpoint.html)
+
+```{r checkpoint,eval=FALSE}
+library(checkpoint)
+checkpoint("2021-01-27")
+```
+
+## Requirements
+
+Other than a number of R requirements for general processing (`tidyverse`, citation), we will rely on the `tidycensus` package (citation here). 
+
+```{r install-load-tidycensus}
+library(tidycensus)
+library(tidyverse)
+```
+
+## Confidential parameters
+
+Whether we work with actual confidential data, or just need a place to store login credentials, you need to think hard about this. In this case, the Census API requires a key to be requested. Where/how do we store it? There is [no real consensus](https://www.r-bloggers.com/2015/11/how-to-store-and-use-webservice-keys-and-authentication-details-with-r/) - in other words, there are lots of solutions. Here, we use the `~/.Renviron` file, though I won't show you my actual file. So others can do this, I provide a template:
+
+```{r}
+cat(readLines(file.path(basepath,".Renviron.template")))
+```
+
+To reproduce this, [obtain a Census API key](http://api.census.gov/data/key_signup.html), create a file called `.Renviron` and restart R. We can then set the API key for the `tidycensus` package.
+
+```{r loadkey}
+census_api_key(Sys.getenv("censusapikey"))
+```
+
+## Basic example
+
+We're going to follow the "[Basic Usage tutorial](https://walker-data.com/tidycensus/articles/basic-usage.html) from the `tidycensus` website, and compute the median age by state for 2010:
+
+```{r median_age_state}
+time.age10 <- system.time(age10 <- get_decennial(geography = "state",
+                       variables = "P013001",
+                       year = 2010))
+# time it took to run this
+time.age10
+# inspect the data
+head(age10)
+# some stats
+summary(age10)
+```
+
+That was fast: `r time.age10[3]` seconds. But it only generated `r nrow(age10)` observations! What if we used a bit more detail for this? Let's see this for Tompkins county (FIPS code "36109")
+
+```{r median_age_block}
+start.time <- Sys.time()
+age10block <- get_decennial(geography = "block",
+                                                 state="NY",
+                                                 county="109",
+                                                 show_call=TRUE,
+                       variables = "P013001",
+                       year = 2010)
+time.block <- Sys.time() - start.time
+# time it took to run this
+time.block
+# inspect the data
+head(age10block)
+# some stats
+summary(age10block)
+
+# prepare the next block
+counties.to.query <- 30
+# if we wanted all of this, we would replace the number with "nrow(fips_codes)"
+# counties.to.query <- nrow(fips_codes)
+```
+
+That took `r time.block` seconds. It generated `r nrow(age10block)` observations. For ONE county.  There are `r nrow(fips_codes)` counties. Let's see how long this takes for the first `r counties.to.query` counties.
+
+```{r loop_over_counties,cache=TRUE}
+# tidycensus/Census API forces to loop over counties
+start.time <- Sys.time()
+blocks <- NA
+for (row in 1:counties.to.query ) {
+  county <- fips_codes[row,"county_code"]
+  state  <- fips_codes[row,"state"]
+  thisblock <- get_decennial(geography = "block",
+                             state=state,
+                             county=county,
+                       variables = "P013001",
+                       year = 2010)
+  if ( row == 1 ) {
+    blocks <- thisblock
+    rm(thisblock)
+  } else {
+    blocks <- bind_rows(blocks,thisblock)
+    rm(thisblock)
+  }
+}
+end.time <- Sys.time()
+elapsed.time <- end.time - start.time
+elapsed.scale <- elapsed.time / counties.to.query * nrow(fips_codes)
+
+```
+
+That took `r elapsed.time` for `r counties.to.query` of `r nrow(fips_codes)` counties, yielding `r nrow(blocks)` records. You could estimate the total time as:
+
+> **`r round(elapsed.scale/60,1)`** minutes
+
+Would you want to incur that time every time you run the code for the entire country?
+
+## Solution 1: sampling
+
+We already implemented the first solution, which is useful while you are developing this: we reduced the number down to a feasible number, and estimated the total runtime. Ideally, we would use two values for the parameter to control this: a really small number to test code for functionality, and a larger number to get some meaningful results. For the final run, we would set it to run on the full scope of the problem.
+
+## Solution 2: Intermediate files
+
+The second solution is to break the problem apart. Let's see how long it takes to save and to read the resulting file. First, let's be clear about the directory structure here:
+
+```{r setup_dirs}
+basedata <- file.path(basepath,"data")
+rawdata  <- file.path(basedata,"raw")
+cache    <- file.path(basedata,"cache")
+generated<- file.path(basedata,"generated")
+```
+
+We've defined three directories: 
+
+- `basedata` to house all the data
+- `rawdata` to house any data we may have (manually) downloaded from somewhere else
+- `cache` to house intermediate data which can be programmatically downloaded, but maybe need a temporary home
+- `generated` to house any data we generate by modifying either `rawdata` or `cache` data.
+
+Our README should describe this, and could also specify that all data in `cache` and `generated` can be recreated, given enough time.
+
+We're going to use the cache to speed up processing for subsequent runs during testing and possibly for demonstration purposes.
+
+![cache definition](images/cache-definition.png)
+
+Let's make sure these directories exist:
+
+```{r}
+for ( dir in list(basedata,rawdata,cache,generated) ) {
+  if (file.exists(dir)) {
+    message(paste0("Directory ",dir," already present!"))
+  } else {
+    dir.create(file.path(dir),recursive=TRUE)
+    message(paste0("Directory ",dir," created!"))
+  }
+}
+```
+
+Those steps would normally go into the header of our reproducible document!
+
+Let's move to the timing:
+
+```{r saveread}
+system.time(saveRDS(blocks,file = file.path(cache,"block_median.Rds")))
+rm(blocks)
+start.time <- Sys.time()
+blocks <- readRDS(file=file.path(cache,"block_median.Rds"))
+read.time <- Sys.time() - start.time
+read.scaled <- read.time / counties.to.query * nrow(fips_codes)
+```
+
+Assuming that scaling up to the full filesize is linear, it would take **`r round(read.scaled,2)` seconds** to read back the entire universe of blocks from a cached file, compared to **`r round(elapsed.scale,2)` seconds** for using the API each time. 
+
+## Refinements
+
+How could this be even more refined? For one, we could test whether the cache file has already been generated in the download section:
+
+```{r cache,eval=FALSE}
+# not evaluated
+cache.blocks <- file.path(cache,"block_median.Rds")
+
+if ( file.exists(cache.blocks)) {
+  blocks <- readRDS(cache.blocks)
+} else {
+  readin_from_api(outfile=cache.blocks)
+}
+```
+
+Now we can routinely process this, without having to worry about that pesky download part.^[Note that Rmarkdown allows to define a section as cached as well. However, that cache is automatically invalidated when any code or text above it is modified, leading to potentially undesireable re-downloads. In this case, it may be better to work with a manually defined cache.]
+
+## Generalizing
+
+Note that the above works for any kind of programming language (Stata, SPSS, etc.). It also works and should be used for any large-ish files, and may percolate through an entire job stream.
+
+## Robustness
+
+So what happens when the API (inevitably) changes, breaks, is shut down, or otherwise stops working? 
+
+> Nothing.
+
+Because we have the cached file, we are safe from such breaks in the API. In fact, when providing our replication package, we should (if allowed by license) provide the cached file, yet not remove the part about downloading it. 
+
+
+
+
+
