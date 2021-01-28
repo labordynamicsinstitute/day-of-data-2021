@@ -14,6 +14,7 @@ Lars Vilhuber and David Wasser
 
 - [slides](Vilhuber-Wasser-Day-of-Data-2021.pptx)
 - [Rmarkdown demo](safe-and-efficient.Rmd) ([HTML version](safe-and-efficient.html))
+  - [Rstudio version](https://rstudio.cloud/project/2121664) (requires account on rstudio.cloud, Github, Google)
 
 ## License
 
