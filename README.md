@@ -10,6 +10,11 @@ Many new collaborative and often reproducible or dynamic tools are being develop
 
 Lars Vilhuber and David Wasser
 
+## Materials
+
+- [slides](Vilhuber-Wasser-Day-of-Data-2021.pptx)
+- [Rmarkdown demo](safe-and-efficient.Rmd) ([HTML version](safe-and-efficient.html))
+
 ## License
 
 ![CC-BY-4.0](images/cc-by-nc.png)
