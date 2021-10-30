@@ -1,6 +1,8 @@
 # Cornell Day of Data 2021: Reproducibility and collaboration when your data is really large or confidential
 
-- [Main DoD website](https://data.research.cornell.edu/content/day-data-2021-schedule-and-information#Large%20Confidential%20Data)
+[![DOI](https://img.shields.io/badge/doi%3A-10.17605%2FOSF.IO%2F59MKJ-blue)](https://doi.org/10.17605/OSF.IO/59MKJ)
+
+- [Main DoD website](https://data.research.cornell.edu/content/day-data-2021-schedule-and-information#Large+Confidential+Data)
 - [OSF version](https://osf.io/59mkj/)
 
 ## Abstract
